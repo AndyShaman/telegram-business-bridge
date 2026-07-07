@@ -1,0 +1,13 @@
+[Unit]
+Description=tg-business-bridge daemon
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/tg-business-bridge
+EnvironmentFile=%h/tg-business-bridge/.env
+ExecStart=%h/.local/bin/uv run tg-business-bridge
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

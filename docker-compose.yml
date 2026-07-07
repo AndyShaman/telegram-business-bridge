@@ -1,0 +1,9 @@
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BRIDGE_DATA_DIR: /data
+    volumes:
+      - ./data:/data

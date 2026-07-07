@@ -1,0 +1,7 @@
+.superpowers/
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+data/
+.env
