@@ -141,6 +141,39 @@ Agents that read repositories automatically (Claude Code, Codex, Cursor, …) wi
 pick up [AGENTS.md](AGENTS.md) on their own — it contains the full verbatim playbook:
 tool cycle, reply rules, and how to build long-term memory on top of the archive.
 
+## Ecosystem: covering all of Telegram
+
+The bridge deliberately does one thing: **private chats, through the official
+Business API**. Groups and channels are invisible to a Business connection — a
+Telegram limitation, not a missing feature. The safe way to cover them is a
+second, separate lane:
+
+```
+PERSONAL account ──── Business API ────▶ telegram-business-bridge
+  official, revocable in Settings,        private chats: realtime archive,
+  no session string exists at all         search, drafts with your ✅
+
+SECOND, expendable ── MTProto userbot ──▶ groups & channels
+  account: a regular member of the        batch collection
+  chats you care about
+                    │
+                    ▼
+     your agent (any MCP client) ──▶ knowledge layer: wiki, dossiers,
+                                     summaries — e.g. lorebase
+```
+
+The rule that makes the scheme safe: **your personal account never touches
+MTProto.** A userbot logs in as the account itself — Telegram bans accounts for
+that, and a leaked session string means a full account takeover. If you need
+groups and channels, run the userbot on a separate account added to those chats
+as a regular member: an account you can afford to lose.
+
+The third layer is the agent's own memory. Raw messages stay in the bridge
+archive (and in the userbot's dumps); the agent distills the *meaning* — who
+people are, what was agreed — into its own knowledge base, for example
+[lorebase](https://github.com/AndyShaman/lorebase), an LLM-wiki skill. How to
+build that memory on top of this bridge is described in [AGENTS.md](AGENTS.md).
+
 ## Configuration (env)
 
 | Variable | Description |
