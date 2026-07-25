@@ -100,3 +100,30 @@ async def test_bad_request_returns_error(ready_conn):
     bot.send_message.side_effect = TelegramBadRequest(method=AsyncMock(), message="BUSINESS_PEER_INVALID")
     res = await send_business_reply(bot, ready_conn, 777, "x")
     assert res["ok"] is False and "BUSINESS_PEER_INVALID" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_forbidden_returns_error_instead_of_raising(ready_conn):
+    from aiogram.exceptions import TelegramForbiddenError
+
+    bot = AsyncMock()
+    bot.send_message.side_effect = TelegramForbiddenError(method=AsyncMock(), message="bot was blocked")
+    res = await send_business_reply(bot, ready_conn, 777, "x")
+    assert res["ok"] is False and "blocked" in res["error"]
+
+
+@pytest.mark.asyncio
+async def test_second_retry_after_returns_error(ready_conn, monkeypatch):
+    import tg_business_bridge.sender as sender_mod
+
+    async def fake_sleep(s):
+        pass
+
+    monkeypatch.setattr(sender_mod.asyncio, "sleep", fake_sleep)
+    bot = AsyncMock()
+    bot.send_message.side_effect = [
+        TelegramRetryAfter(method=AsyncMock(), message="flood", retry_after=3),
+        TelegramRetryAfter(method=AsyncMock(), message="flood", retry_after=30),
+    ]
+    res = await send_business_reply(bot, ready_conn, 777, "x")
+    assert res["ok"] is False  # повторный flood не должен пробрасываться исключением

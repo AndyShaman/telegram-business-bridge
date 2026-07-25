@@ -128,6 +128,11 @@ For Claude Code: `claude mcp add telegram -- uv run tg-business-bridge-mcp`
 `BRIDGE_MCP_TRANSPORT=streamable-http` and connect to `http://host:8765/mcp`.
 Per-client walkthroughs: [docs/integrations/](docs/integrations/).
 
+> ⚠️ The MCP server has **no authentication**. Keep `BRIDGE_MCP_HOST` at
+> `127.0.0.1` (default): binding to `0.0.0.0` exposes your entire message
+> history — and sending on your behalf — to anyone who can reach the port.
+> For remote access use an SSH tunnel or VPN instead.
+
 Then give your agent this instruction (paste into its system prompt / CLAUDE.md /
 custom instructions):
 

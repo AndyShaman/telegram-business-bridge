@@ -183,6 +183,23 @@ def test_get_context_impl_survives_odd_raw_json(env, raw):
     assert "↩" not in out  # родитель не распознан, но инструмент не падает
 
 
+def test_history_and_search_reject_bad_iso(env):
+    out = mcp_server.get_history_impl(chat_id=777, from_iso="вчера")
+    assert "ISO 8601" in out  # внятное сообщение вместо traceback
+    out2 = mcp_server.search_messages_impl(query="x", to_iso="not-a-date")
+    assert "ISO 8601" in out2
+
+
+def test_get_history_limit_clamped(env):
+    conn = mcp_server.get_conn()
+    for i in range(1, 5):
+        db.insert_message(conn, _msg(message_id=i, ts=1000 + i, text=f"msg{i}"))
+    out = mcp_server.get_history_impl(chat_id=777, limit=-1)  # не снимает LIMIT в SQLite
+    lines = [line for line in out.splitlines() if line.startswith("[")]
+    assert len(lines) == 1
+    assert "msg4" in out  # и это именно самое свежее сообщение
+
+
 def test_draft_reply_policy(env):
     conn = mcp_server.get_conn()
     out_normal = mcp_server.draft_reply_impl(chat_id=777, text="привет")

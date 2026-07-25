@@ -33,7 +33,14 @@ async def download_media(bot: Bot, row: dict, media_dir: Path) -> str | None:
         dest_dir = media_dir / month
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / f"{row['file_unique_id']}{ext}"
-        await bot.download_file(file.file_path, destination=str(dest))
+        # качаем во временный файл: оборванная загрузка не должна оставить
+        # недокачанный файл под именем готового (и не попасть под retention)
+        tmp = dest.with_name(dest.name + ".part")
+        try:
+            await bot.download_file(file.file_path, destination=str(tmp))
+            tmp.replace(dest)
+        finally:
+            tmp.unlink(missing_ok=True)
         return str(dest.relative_to(media_dir.parent))
     except (TelegramAPIError, OSError) as e:
         log.warning("media download failed for %s: %s", row.get("file_id"), e)

@@ -1,5 +1,6 @@
 import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import Literal
 
@@ -41,6 +42,23 @@ def _secure_data_dir(data_dir: Path) -> None:
         data_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
 
 
+def _git_check_ignore(repo: Path, target: Path) -> bool | None:
+    """Спрашивает сам git, игнорируется ли target (учитывает все источники правил).
+    None — git недоступен или упал: решаем по текстовой эвристике."""
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(repo), "check-ignore", "-q", str(target)],
+            capture_output=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if res.returncode == 0:
+        return True
+    if res.returncode == 1:
+        return False
+    return None
+
+
 def assert_data_dir_safe(settings: Settings) -> None:
     """БД с личными сообщениями не должна попасть в git."""
     _secure_data_dir(settings.data_dir)
@@ -49,7 +67,10 @@ def assert_data_dir_safe(settings: Settings) -> None:
         if (parent / ".git").exists():
             gitignore = parent / ".gitignore"
             rel = str(git_dir.relative_to(parent))
-            if not gitignore.exists() or rel.split("/")[0] not in gitignore.read_text():
+            ignored = _git_check_ignore(parent, git_dir)
+            if ignored is None:
+                ignored = gitignore.exists() and rel.split("/")[0] in gitignore.read_text()
+            if not ignored:
                 raise SystemExit(
                     f"ОТКАЗ ЗАПУСКА: {git_dir} лежит в git-репозитории {parent}, "
                     f"но не покрыт .gitignore. Добавь '{rel}/' в {gitignore}."

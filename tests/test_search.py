@@ -35,6 +35,25 @@ def test_get_history_and_list_chats(conn):
     assert c777["msg_count"] == 2 and c777["last_ts"] == 300
 
 
+def test_get_history_returns_latest_slice(conn):
+    # при переполнении limit отдаётся хвост ленты (свежие), по возрастанию времени
+    for i in range(1, 8):
+        db.insert_message(conn, _msg(message_id=i, ts=100 + i, text=f"m{i}"))
+    hist = db.get_history(conn, 777, limit=3)
+    assert [h["message_id"] for h in hist] == [5, 6, 7]
+    # фильтр по периоду сохраняется
+    hist2 = db.get_history(conn, 777, to_ts=104, limit=2)
+    assert [h["message_id"] for h in hist2] == [3, 4]
+
+
+def test_last_incoming_sender_name(conn):
+    db.insert_message(conn, _msg(message_id=1, ts=100, sender_name="Alice Old"))
+    db.insert_message(conn, _msg(message_id=2, ts=200, sender_name="Alice"))
+    db.insert_message(conn, _msg(message_id=3, ts=300, direction="out", sender_name="Owner"))
+    assert db.last_incoming_sender_name(conn, 777) == "Alice"  # последний входящий, не 'out'
+    assert db.last_incoming_sender_name(conn, 999) is None
+
+
 def test_search_query_sanitized(conn):
     _fill(conn)
     assert db.search_messages(conn, "") == []

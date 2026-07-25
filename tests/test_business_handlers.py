@@ -256,18 +256,43 @@ async def test_bootstrap_failure_has_cooldown_before_retry(conn, settings, monke
     fake_time = [1000.0]
     monkeypatch.setattr(business_handlers.time, "monotonic", lambda: fake_time[0])
 
-    await on_business_message(_m(text="раз"), conn=conn, bot=bot, settings=settings)
+    await on_business_message(_m(text="раз", message_id=5), conn=conn, bot=bot, settings=settings)
     bot.get_business_connection.assert_awaited_once()
 
-    await on_business_message(_m(text="два"), conn=conn, bot=bot, settings=settings)
+    await on_business_message(_m(text="два", message_id=6), conn=conn, bot=bot, settings=settings)
     bot.get_business_connection.assert_awaited_once()  # still just once — cooldown active
 
     fake_time[0] += business_handlers._BOOTSTRAP_RETRY_SEC + 1
-    await on_business_message(_m(text="три"), conn=conn, bot=bot, settings=settings)
+    await on_business_message(_m(text="три", message_id=7), conn=conn, bot=bot, settings=settings)
     assert bot.get_business_connection.await_count == 2  # cooldown expired — retried
 
     rows = conn.execute("SELECT text FROM messages ORDER BY id").fetchall()
     assert [r["text"] for r in rows] == ["раз", "два", "три"]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_delivery_not_stored_twice(conn, settings):
+    # Telegram может передоставить апдейт после падения демона до подтверждения offset
+    db.upsert_connection(conn, "conn1", 42, "{}", True)
+    bot = _bot()
+    await on_business_message(_m(text="привет"), conn=conn, bot=bot, settings=settings)
+    await on_business_message(_m(text="привет"), conn=conn, bot=bot, settings=settings)
+    rows = conn.execute("SELECT * FROM messages").fetchall()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_edit_updates_stored_text_and_fts(conn, settings):
+    db.upsert_connection(conn, "conn1", 42, "{}", True)
+    await on_business_message(_m(text="старый договор"), conn=conn, bot=_bot(), settings=settings)
+    await on_edited_business_message(_m(text="новый контракт", edit_date=1751800100), conn=conn)
+
+    row = conn.execute("SELECT text FROM messages").fetchone()
+    assert row["text"] == "новый контракт"  # история отдаёт актуальный текст
+    assert db.search_messages(conn, "контракт") != []  # FTS переиндексирован
+    assert db.search_messages(conn, "договор") == []
+    ev = conn.execute("SELECT * FROM message_events").fetchone()
+    assert ev["kind"] == "edited" and ev["ts"] == 1751800100
 
 
 @pytest.mark.asyncio

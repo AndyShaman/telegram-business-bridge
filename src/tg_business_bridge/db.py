@@ -309,6 +309,24 @@ def last_incoming_message_id(conn: sqlite3.Connection, chat_id: int) -> int | No
     return row["message_id"] if row else None
 
 
+def last_incoming_sender_name(conn: sqlite3.Connection, chat_id: int) -> str | None:
+    row = conn.execute(
+        "SELECT sender_name FROM messages WHERE chat_id=? AND direction='in' "
+        "ORDER BY ts DESC, id DESC LIMIT 1",
+        (chat_id,),
+    ).fetchone()
+    return row["sender_name"] if row else None
+
+
+def find_message_rowid(conn: sqlite3.Connection, chat_id: int, message_id: int) -> int | None:
+    """Последняя (по id) строка с этой парой chat_id+message_id — пара схемой не уникальна."""
+    row = conn.execute(
+        "SELECT id FROM messages WHERE chat_id=? AND message_id=? ORDER BY id DESC LIMIT 1",
+        (chat_id, message_id),
+    ).fetchone()
+    return row["id"] if row else None
+
+
 def list_chats(conn: sqlite3.Connection, active_since_ts: int | None = None) -> list[dict]:
     sql = """SELECT chat_id,
                     max(ts) AS last_ts,
@@ -337,8 +355,11 @@ def get_history(
     if to_ts is not None:
         sql += " AND ts <= :to_ts"
         params["to_ts"] = to_ts
-    sql += " ORDER BY ts, id LIMIT :limit"
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    # Хвост ленты, как в мессенджере: LIMIT отбирает самые свежие сообщения диапазона,
+    # наружу результат отдаётся по возрастанию времени
+    sql += " ORDER BY ts DESC, id DESC LIMIT :limit"
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in reversed(rows)]
 
 
 def get_context(
@@ -396,5 +417,5 @@ def search_messages(
     if to_ts is not None:
         sql += " AND m.ts <= :to_ts"
         params["to_ts"] = to_ts
-    sql += " ORDER BY m.ts DESC LIMIT :limit"
+    sql += " ORDER BY m.ts DESC, m.id DESC LIMIT :limit"
     return [dict(r) for r in conn.execute(sql, params).fetchall()]

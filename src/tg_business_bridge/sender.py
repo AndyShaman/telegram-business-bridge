@@ -3,7 +3,7 @@ import json
 import logging
 import sqlite3
 
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 
 from tg_business_bridge import db
 from tg_business_bridge.extract import extract_message_row
@@ -26,7 +26,9 @@ async def send_business_reply(bot, conn: sqlite3.Connection, chat_id: int, text:
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after)
             sent = await bot.send_message(chat_id=chat_id, text=text, business_connection_id=cid)
-    except TelegramBadRequest as e:
+    # Ловим всю иерархию TelegramAPIError (BadRequest, Forbidden, сеть, 5xx, повторный
+    # RetryAfter): иначе исключение уйдёт выше и черновик навсегда останется в 'sending'
+    except TelegramAPIError as e:
         return {"ok": False, "error": str(e)}
 
     # Telegram не присылает эхо собственных business-сообщений через getUpdates,

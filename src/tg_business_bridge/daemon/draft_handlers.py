@@ -1,8 +1,10 @@
 import asyncio
 import logging
 import sqlite3
+import time
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from tg_business_bridge import db
@@ -37,34 +39,64 @@ def _card_text(draft: sqlite3.Row, contact: str) -> str:
     return header + draft["text"][:limit] + _TRUNCATE_MARKER
 
 
-async def process_new_drafts(bot: Bot, conn: sqlite3.Connection, settings: Settings) -> None:
-    connection = db.get_enabled_connection(conn)
-    for draft in db.get_drafts_by_status(conn, "pending"):
-        if connection is None:
-            db.set_draft_status(conn, draft["id"], "failed", "no active business connection")
-            continue
-        hist = db.get_history(conn, draft["chat_id"], limit=1)
-        contact = hist[0]["sender_name"] if hist else str(draft["chat_id"])
-        text = _card_text(draft, contact)
-        sent = await bot.send_message(
-            chat_id=connection["owner_id"], text=text, reply_markup=_card_markup(draft["id"])
-        )
-        db.set_draft_card(conn, draft["id"], sent.message_id)
-        db.set_draft_status(conn, draft["id"], "awaiting")
+# До этого момента (time.monotonic) карточки не отправляются: Telegram попросил
+# подождать, преждевременные повторы только продлевают flood-лимит
+_flood_wait_until = 0.0
 
-        for old in db.supersede_awaiting(conn, draft["chat_id"], draft["id"]):
-            if old["card_message_id"] is None:
-                continue
-            old_text = _card_text(old, contact)
+
+def _contact_name(conn: sqlite3.Connection, chat_id: int) -> str:
+    return db.last_incoming_sender_name(conn, chat_id) or str(chat_id)
+
+
+async def _send_card(
+    bot: Bot, conn: sqlite3.Connection, connection: sqlite3.Row, draft: sqlite3.Row,
+) -> None:
+    contact = _contact_name(conn, draft["chat_id"])
+    text = _card_text(draft, contact)
+    sent = await bot.send_message(
+        chat_id=connection["owner_id"], text=text, reply_markup=_card_markup(draft["id"])
+    )
+    db.set_draft_card(conn, draft["id"], sent.message_id)
+    db.set_draft_status(conn, draft["id"], "awaiting")
+
+    for old in db.supersede_awaiting(conn, draft["chat_id"], draft["id"]):
+        if old["card_message_id"] is None:
+            continue
+        old_text = _card_text(old, contact)
+        try:
+            await bot.edit_message_text(
+                chat_id=connection["owner_id"],
+                message_id=old["card_message_id"],
+                text=old_text + "\n\n⏭ Заменён новым черновиком",
+                reply_markup=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - редактирование карточки не критично
+            log.warning("не удалось отредактировать карточку черновика %s: %s", old["id"], exc)
+
+
+async def process_new_drafts(bot: Bot, conn: sqlite3.Connection, settings: Settings) -> None:
+    global _flood_wait_until
+    connection = db.get_enabled_connection(conn)
+    if connection is None:
+        # Подключения (ещё) нет — черновики ждут, не помечаясь failed: bootstrap
+        # в business_handlers подтянет connection при первом же входящем сообщении
+        if db.get_drafts_by_status(conn, "pending") or db.get_drafts_by_status(conn, "approved"):
+            log.warning("нет активного business connection — черновики ждут")
+        return
+
+    if time.monotonic() >= _flood_wait_until:
+        for draft in db.get_drafts_by_status(conn, "pending"):
             try:
-                await bot.edit_message_text(
-                    chat_id=connection["owner_id"],
-                    message_id=old["card_message_id"],
-                    text=old_text + "\n\n⏭ Заменён новым черновиком",
-                    reply_markup=None,
+                await _send_card(bot, conn, connection, draft)
+            except TelegramRetryAfter as exc:
+                _flood_wait_until = time.monotonic() + exc.retry_after
+                log.warning(
+                    "flood wait %s сек при отправке карточки черновика %s",
+                    exc.retry_after, draft["id"],
                 )
-            except Exception as exc:  # noqa: BLE001 - редактирование карточки не критично
-                log.warning("не удалось отредактировать карточку черновика %s: %s", old["id"], exc)
+                break
+            except Exception:  # noqa: BLE001 - сбойная карточка не должна блокировать остальные
+                log.exception("не удалось отправить карточку черновика %s", draft["id"])
 
     for draft in db.get_drafts_by_status(conn, "approved"):
         if not db.claim_draft(conn, draft["id"]):
@@ -72,16 +104,18 @@ async def process_new_drafts(bot: Bot, conn: sqlite3.Connection, settings: Setti
         if len(draft["text"]) > 4096:
             res = {"ok": False, "error": "текст длиннее 4096 символов — Telegram не примет"}
         else:
-            res = await send_business_reply(bot, conn, draft["chat_id"], draft["text"])
+            try:
+                res = await send_business_reply(bot, conn, draft["chat_id"], draft["text"])
+            except Exception as exc:  # noqa: BLE001 - черновик не должен зависнуть в 'sending'
+                log.exception("непредвиденная ошибка отправки черновика %s", draft["id"])
+                res = {"ok": False, "error": f"непредвиденная ошибка: {exc}"}
         if res["ok"]:
             db.set_draft_status(conn, draft["id"], "sent")
         else:
             db.set_draft_status(conn, draft["id"], "failed", res["error"])
 
-        if draft["card_message_id"] and connection is not None:
-            hist = db.get_history(conn, draft["chat_id"], limit=1)
-            contact = hist[0]["sender_name"] if hist else str(draft["chat_id"])
-            base_text = _card_text(draft, contact)
+        if draft["card_message_id"]:
+            base_text = _card_text(draft, _contact_name(conn, draft["chat_id"]))
             suffix = "\n\n✅ Отправлено" if res["ok"] else f"\n\n⚠️ Не удалось отправить: {res['error']}"
             try:
                 await bot.edit_message_text(

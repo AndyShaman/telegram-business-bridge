@@ -303,6 +303,89 @@ async def test_malformed_callback_data_ignored(ready_conn, settings):  # noqa: F
     assert db.get_draft(ready_conn, d2)["status"] == "awaiting"
 
 
+@pytest.mark.asyncio
+async def test_no_connection_keeps_drafts_waiting(conn, settings):  # noqa: F811
+    # без активного connection черновики не помечаются failed, а ждут его появления
+    pid = db.create_draft(conn, 777, "карточка", "pending")
+    aid = db.create_draft(conn, 777, "ответ", "approved")
+    bot = AsyncMock()
+    await process_new_drafts(bot, conn, settings)
+    assert db.get_draft(conn, pid)["status"] == "pending"
+    assert db.get_draft(conn, aid)["status"] == "approved"
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_poison_card_does_not_block_approved(ready_conn, settings):  # noqa: F811
+    # сбой отправки карточки (например, владелец не открыл чат с ботом) не должен
+    # блокировать ни другие карточки, ни очередь approved-черновиков
+    p1 = db.create_draft(ready_conn, 777, "карточка", "pending")
+    a1 = db.create_draft(ready_conn, 777, "ответ", "approved")
+    bot = AsyncMock()
+
+    async def side_effect(*args, **kwargs):
+        if kwargs.get("reply_markup") is not None:  # карточка владельцу
+            raise RuntimeError("bot can't initiate conversation")
+        msg = AsyncMock()
+        msg.message_id = 91
+        return msg
+
+    bot.send_message.side_effect = side_effect
+    await process_new_drafts(bot, ready_conn, settings)
+
+    assert db.get_draft(ready_conn, p1)["status"] == "pending"  # будет повторено
+    assert db.get_draft(ready_conn, a1)["status"] == "sent"  # очередь не встала
+
+
+@pytest.mark.asyncio
+async def test_unexpected_send_error_marks_failed_not_sending(ready_conn, settings, monkeypatch):  # noqa: F811
+    did = db.create_draft(ready_conn, 777, "ответ", "approved")
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("tg_business_bridge.daemon.draft_handlers.send_business_reply", boom)
+    await process_new_drafts(AsyncMock(), ready_conn, settings)
+    row = db.get_draft(ready_conn, did)
+    assert row["status"] == "failed" and "boom" in row["error"]  # не завис в 'sending'
+
+
+@pytest.mark.asyncio
+async def test_card_flood_wait_pauses_card_sending(ready_conn, settings, monkeypatch):  # noqa: F811
+    from aiogram.exceptions import TelegramRetryAfter
+
+    import tg_business_bridge.daemon.draft_handlers as dh
+
+    monkeypatch.setattr(dh, "_flood_wait_until", 0.0)
+    d1 = db.create_draft(ready_conn, 777, "a", "pending")
+    d2 = db.create_draft(ready_conn, 777, "b", "pending")
+    bot = AsyncMock()
+    bot.send_message.side_effect = TelegramRetryAfter(
+        method=AsyncMock(), message="flood", retry_after=60
+    )
+    await process_new_drafts(bot, ready_conn, settings)
+    assert db.get_draft(ready_conn, d1)["status"] == "pending"
+    assert db.get_draft(ready_conn, d2)["status"] == "pending"
+    bot.send_message.assert_awaited_once()  # после первого flood-ответа попытки прекращаются
+
+    bot.send_message.reset_mock()
+    await process_new_drafts(bot, ready_conn, settings)
+    bot.send_message.assert_not_called()  # пауза ещё не истекла
+
+
+@pytest.mark.asyncio
+async def test_card_contact_is_last_incoming_sender(ready_conn, settings):  # noqa: F811
+    # имя в карточке — отправитель ПОСЛЕДНЕГО входящего, а не первого сообщения чата
+    db.insert_message(ready_conn, _msg(message_id=11, ts=2000, direction="out", sender_name="Owner"))
+    db.insert_message(ready_conn, _msg(message_id=12, ts=3000, sender_name="Новое Имя"))
+    did = db.create_draft(ready_conn, 777, "черновик", "pending")
+    bot = AsyncMock()
+    bot.send_message.return_value.message_id = 321
+    await process_new_drafts(bot, ready_conn, settings)
+    assert "Новое Имя" in bot.send_message.await_args.kwargs["text"]
+    assert db.get_draft(ready_conn, did)["status"] == "awaiting"
+
+
 def test_list_drafts_filter_and_order(conn):
     d1 = db.create_draft(conn, 777, "первый", "pending")
     d2 = db.create_draft(conn, 777, "второй", "awaiting")

@@ -1,6 +1,9 @@
 import os
 import stat
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from tg_business_bridge.config import Settings, assert_data_dir_safe
 
@@ -59,3 +62,30 @@ def test_assert_data_dir_safe_tightens_loose_existing_dir(monkeypatch, tmp_path)
     s = Settings()
     assert_data_dir_safe(s)
     assert stat.S_IMODE(os.stat(data_dir).st_mode) == 0o700
+
+
+def _git_env(monkeypatch, tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    monkeypatch.setenv("BRIDGE_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("BRIDGE_DATA_DIR", str(tmp_path / "data"))
+    return Settings()
+
+
+def test_assert_data_dir_safe_refuses_unignored_repo(monkeypatch, tmp_path):
+    s = _git_env(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit):
+        assert_data_dir_safe(s)
+
+
+def test_assert_data_dir_safe_accepts_ignored_dir(monkeypatch, tmp_path):
+    s = _git_env(monkeypatch, tmp_path)
+    (tmp_path / ".gitignore").write_text("data/\n")
+    assert_data_dir_safe(s)  # не падает
+
+
+def test_assert_data_dir_safe_rejects_lookalike_gitignore_entry(monkeypatch, tmp_path):
+    # раньше подстрочная эвристика принимала 'metadata/' за покрытие каталога 'data'
+    s = _git_env(monkeypatch, tmp_path)
+    (tmp_path / ".gitignore").write_text("metadata/\n")
+    with pytest.raises(SystemExit):
+        assert_data_dir_safe(s)

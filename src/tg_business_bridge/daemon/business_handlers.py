@@ -48,6 +48,11 @@ async def on_business_message(
         except Exception as exc:
             log.warning("bootstrap подключения %s не удался: %s", connection_id, exc)
             _bootstrap_failed_at[connection_id] = time.monotonic()
+    if db.find_message_rowid(conn, row["chat_id"], row["message_id"]) is not None:
+        # Telegram передоставляет апдейты после падения демона до подтверждения offset —
+        # без проверки одно сообщение появлялось бы в истории и поиске дважды
+        log.info("повторная доставка msg %s в чате %s — пропущено", row["message_id"], row["chat_id"])
+        return
     rowid = db.insert_message(conn, row)
     if media.should_download(row):
         rel = await media.download_media(bot, row, settings.media_dir)
@@ -63,10 +68,16 @@ async def on_business_message(
 
 @router.edited_business_message()
 async def on_edited_business_message(msg: Message, conn: sqlite3.Connection) -> None:
+    new_text = msg.text or msg.caption
     db.add_message_event(
         conn, msg.chat.id, msg.message_id, "edited",
-        int(time.time()), new_text=msg.text or msg.caption,
+        msg.edit_date or int(time.time()), new_text=new_text,
     )
+    if new_text is not None:
+        # без этого история, поиск и FTS продолжали бы отдавать доредакционный текст
+        rowid = db.find_message_rowid(conn, msg.chat.id, msg.message_id)
+        if rowid is not None:
+            db.set_message_text(conn, rowid, new_text)
 
 
 @router.deleted_business_messages()

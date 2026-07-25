@@ -44,6 +44,24 @@ async def test_download_media_swallows_api_error(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_download_media_cleans_partial_file_on_failure(tmp_path):
+    from aiogram.exceptions import TelegramNetworkError
+
+    bot = AsyncMock()
+    bot.get_file.return_value.file_path = "voice/file_1.oga"
+
+    async def broken_download(file_path, destination):
+        Path(destination).write_bytes(b"part")  # успело записаться до обрыва
+        raise TelegramNetworkError(method=AsyncMock(), message="connection reset")
+
+    bot.download_file.side_effect = broken_download
+    row = {"file_id": "F1", "file_unique_id": "U1", "file_size": 10, "ts": 1751800000}
+    assert await download_media(bot, row, tmp_path / "media") is None
+    leftovers = list((tmp_path / "media").rglob("*")) if (tmp_path / "media").exists() else []
+    assert not [p for p in leftovers if p.is_file()]  # ни готового, ни .part файла
+
+
+@pytest.mark.asyncio
 async def test_download_media_returns_none_if_file_path_is_none(tmp_path):
     bot = AsyncMock()
     bot.get_file.return_value.file_path = None
