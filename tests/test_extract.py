@@ -71,3 +71,15 @@ def test_is_bot_outgoing():
     m = _m(sender_business_bot={"id": 99, "is_bot": True, "first_name": "bridge"}, text="x")
     assert is_bot_outgoing(m, bot_id=99) is True
     assert is_bot_outgoing(_m(text="x"), bot_id=99) is False
+
+
+def test_incoming_with_link_preview_serializes():
+    # регрессия: aiogram заполняет LinkPreviewOptions сентинелами Default,
+    # model_dump_json без exclude_defaults падал и входящее терялось
+    m = _m(
+        text="глянь https://example.com",
+        link_preview_options={"url": "https://example.com"},
+    )
+    row = extract_message_row(m, bot_id=99)
+    assert row["direction"] == "in"
+    assert "example.com" in row["raw_json"]

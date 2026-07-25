@@ -47,7 +47,9 @@ def extract_message_row(msg: Message, bot_id: int) -> dict:
         "file_id": file_id,
         "file_unique_id": file_unique_id,
         "file_size": file_size,
-        "raw_json": msg.model_dump_json(exclude_none=True),
+        # exclude_defaults: aiogram подставляет sentinel Default в незаполненные поля
+        # (напр. LinkPreviewOptions) — без него сериализация падает и сообщение теряется
+        "raw_json": msg.model_dump_json(exclude_none=True, exclude_defaults=True),
     }
 
 
