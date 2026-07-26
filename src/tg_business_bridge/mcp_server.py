@@ -107,6 +107,17 @@ def auto_allowed(settings: McpSettings, chat_id: int) -> bool:
 
 # --- реализация инструментов (тестируемые функции) ---
 
+# Username идёт в вывод БЕЗ UNTRUSTED-маркеров (он нужен агенту как ссылка t.me/...),
+# поэтому пропускаем только строки, которые Telegram в принципе допускает как username.
+_USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
+
+
+def _username_part(username) -> str:
+    if isinstance(username, str) and _USERNAME_RE.match(username):
+        return f" (@{username})"
+    return ""
+
+
 def list_chats_impl(active_since_days: int | None = None) -> str:
     since = None
     if active_since_days is not None:
@@ -115,7 +126,8 @@ def list_chats_impl(active_since_days: int | None = None) -> str:
     if not chats:
         return "Чатов нет."
     return "\n".join(
-        f"chat {c['chat_id']}: <<<UNTRUSTED>{_neutralize(c['last_sender_name'] or '?')}</UNTRUSTED>>> — "
+        f"chat {c['chat_id']}: <<<UNTRUSTED>{_neutralize(c['last_sender_name'] or '?')}</UNTRUSTED>>>"
+        f"{_username_part(c.get('username'))} — "
         f"{c['msg_count']} сообщ., последнее {_fmt_ts(c['last_ts'])}"
         for c in chats
     )

@@ -333,7 +333,10 @@ def list_chats(conn: sqlite3.Connection, active_since_ts: int | None = None) -> 
                     count(*) AS msg_count,
                     (SELECT sender_name FROM messages m2
                      WHERE m2.chat_id = m.chat_id AND m2.direction='in'
-                     ORDER BY ts DESC LIMIT 1) AS last_sender_name
+                     ORDER BY ts DESC LIMIT 1) AS last_sender_name,
+                    (SELECT json_extract(raw_json, '$.from_user.username') FROM messages m3
+                     WHERE m3.chat_id = m.chat_id AND m3.direction='in'
+                     ORDER BY ts DESC LIMIT 1) AS username
              FROM messages m GROUP BY chat_id"""
     if active_since_ts is not None:
         sql += " HAVING max(ts) >= :since"
