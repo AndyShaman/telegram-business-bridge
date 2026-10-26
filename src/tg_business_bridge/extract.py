@@ -1,6 +1,32 @@
 from aiogram.types import Message
 
-_MEDIA_FIELDS = ["photo", "voice", "video", "video_note", "animation", "audio", "document", "sticker"]
+# live_photo первым: у живого фото внутри есть и обычный photo, тип важнее
+_MEDIA_FIELDS = [
+    "live_photo", "photo", "voice", "video", "video_note", "animation", "audio", "document", "sticker",
+]
+
+
+def _special_text(msg: Message) -> tuple[str, str | None] | None:
+    """(тип, текст для поиска) для сообщений без file_id и без text/caption."""
+    if msg.poll is not None:
+        options = "\n".join(f"- {o.text}" for o in msg.poll.options)
+        return "poll", f"{msg.poll.question}\n{options}"
+    if msg.checklist is not None:
+        tasks = "\n".join(
+            f"[{'x' if t.completion_date or t.completed_by_user or t.completed_by_chat else ' '}] {t.text}"
+            for t in msg.checklist.tasks
+        )
+        return "checklist", f"{msg.checklist.title}\n{tasks}"
+    if msg.paid_media is not None:
+        return "paid_media", None  # текст — подпись, она в caption
+    if msg.contact is not None:
+        c = msg.contact
+        return "contact", " ".join(filter(None, [c.first_name, c.last_name, c.phone_number]))
+    if msg.venue is not None:
+        return "venue", f"{msg.venue.title}, {msg.venue.address}"
+    if msg.location is not None:
+        return "location", None
+    return None
 
 
 def extract_message_row(msg: Message, bot_id: int) -> dict:
@@ -26,7 +52,12 @@ def extract_message_row(msg: Message, bot_id: int) -> dict:
         break
     text = msg.text or msg.caption
     if media_type is None:
-        media_type = "text" if text is not None else "other"
+        special = _special_text(msg)
+        if special is not None:
+            media_type, special_text = special
+            text = text or special_text
+        else:
+            media_type = "text" if text is not None else "other"
 
     sender_name = None
     if sender is not None:
