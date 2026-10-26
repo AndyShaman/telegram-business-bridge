@@ -24,6 +24,7 @@ def test_settings_from_env(monkeypatch, tmp_path):
 def test_settings_defaults(monkeypatch):
     monkeypatch.setenv("BRIDGE_BOT_TOKEN", "123:abc")
     monkeypatch.delenv("BRIDGE_SEND_POLICY", raising=False)
+    monkeypatch.delenv("BRIDGE_EDITOR_URL", raising=False)
     s = Settings()
     assert s.send_policy == "approve"
     assert s.auto_send_chat_ids == []
@@ -31,6 +32,8 @@ def test_settings_defaults(monkeypatch):
     assert s.mcp_host == "127.0.0.1"
     assert s.mcp_port == 8765
     assert s.media_retention_days == 0
+    # редактор у каждого свой: чужая страница видит тексты черновиков
+    assert s.editor_url == ""
 
 
 def test_settings_mcp_transport_from_env(monkeypatch):

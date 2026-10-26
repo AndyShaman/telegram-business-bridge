@@ -20,6 +20,7 @@ from test_extract import _m
 def settings(tmp_path, monkeypatch):
     monkeypatch.setenv("BRIDGE_BOT_TOKEN", "1:x")
     monkeypatch.setenv("BRIDGE_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BRIDGE_EDITOR_URL", "https://editor.example/editor.html")
     return Settings()
 
 

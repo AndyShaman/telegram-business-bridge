@@ -201,7 +201,10 @@ How it works under the hood — and why it is private:
 
 - The editor page (`docs/editor.html`) is a **static, self-contained HTML file**:
   no backend, no analytics, no storage, no external requests except Telegram's
-  official `telegram-web-app.js`.
+  official `telegram-web-app.js`. Its built-in Content Security Policy forbids
+  network requests. It covers everything that comes after it in the page; to
+  cover the whole page, have the host send the same string as a
+  `Content-Security-Policy` header too.
 - The draft text travels to the page in the **URL fragment** (`#...`), which
   browsers never send to the hosting server — the host only ever sees a request
   for the empty page shell. The edited text returns to the bot through Telegram's
@@ -209,15 +212,20 @@ How it works under the hood — and why it is private:
 - The bot accepts editor results **only from the owner** and only while the
   draft is still `awaiting`.
 
-By default `BRIDGE_EDITOR_URL` points to the page served from this repository's
-GitHub Pages. If you run your own fork, host your own copy — trusting someone
-else's page means trusting their JavaScript with your draft texts:
+`BRIDGE_EDITOR_URL` is empty by default, so editing is off until you host the
+page yourself. Trusting someone else's page means trusting their JavaScript
+with your draft texts, so there is no shared copy:
 
-1. Fork the repo, enable **Settings → Pages → Deploy from a branch → `main` /
-   `docs`** (the page is already in `docs/editor.html`) — or put that single
-   file on any static HTTPS hosting.
-2. Set `BRIDGE_EDITOR_URL=https://<you>.github.io/<repo>/editor.html` in `.env`
-   and restart the daemon.
+1. Put `docs/editor.html` on any static HTTPS hosting — for example, enable
+   **Settings → Pages → Deploy from a branch → `main` / `docs`** in your fork.
+2. Set the page address in `.env`
+   (`BRIDGE_EDITOR_URL=https://<you>.github.io/<repo>/editor.html`) and restart
+   the daemon.
+
+Give the editor an address of its own: do not put it on a site that runs visit
+counters. And mind GitHub: if your account's user site (`<you>.github.io`) has
+a custom domain, every repository's Pages move to that domain — and vanish when
+the domain moves to another host.
 
 The daemon and the editor page are updated together: if you host the page
 yourself, refresh your copy when you upgrade the daemon to this version —
@@ -244,7 +252,7 @@ with an explicit error instead of hanging.
 | BRIDGE_MCP_PORT | MCP server port for streamable-http (default 8765) |
 | BRIDGE_DEEPGRAM_API_KEY | Deepgram key: voice, audio and video notes (voice/audio/video_note) → text (optional; empty default = no transcription) |
 | BRIDGE_MEDIA_RETENTION_DAYS | 0 = keep forever (default); media files older than N days are deleted from disk, texts and file_id are kept |
-| BRIDGE_EDITOR_URL | HTTPS URL of the Mini App draft editor page (default: this repo's GitHub Pages copy of `docs/editor.html`; empty = editing disabled, forks should host their own — see [Editing drafts](#editing-drafts-mini-app)) |
+| BRIDGE_EDITOR_URL | HTTPS URL of the Mini App draft editor page (empty by default = editing disabled; you host `docs/editor.html` yourself — see [Editing drafts](#editing-drafts-mini-app)) |
 
 Changing any of these requires restarting the affected process (daemon and/or MCP server).
 
