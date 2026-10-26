@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<!-- Страница ничего не отправляет в сеть: даже чужой скрипт (счётчик хостинга) браузер не пустит.
+     Хеш — от встроенного скрипта страницы; после его правки пересчитать (tests/test_editor_page.py) -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://telegram.org 'sha256-Ffzx8GJk6T6qo/cKmE4pRICBgHO5tuKxzjTzLdPEdFw='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <title>Редактор черновика</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>

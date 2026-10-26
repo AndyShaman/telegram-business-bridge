@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     mcp_port: int = 8765
     deepgram_api_key: str = ""
     media_retention_days: int = 0  # 0 = хранить вечно (по умолчанию); тексты хранятся вечно всегда
-    editor_url: str = "https://andyshaman.github.io/telegram-business-bridge/editor.html"  # "" = редактирование черновиков выключено
+    editor_url: str = ""  # адрес своей копии docs/editor.html; "" = редактирование черновиков выключено
 
     @property
     def db_path(self) -> Path:
