@@ -9,8 +9,10 @@ from urllib.parse import quote
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.filters import Command
 from aiogram.types import (
     CallbackQuery,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -20,7 +22,7 @@ from aiogram.types import (
     WebAppInfo,
 )
 
-from tg_business_bridge import db
+from tg_business_bridge import db, media
 from tg_business_bridge.config import Settings
 from tg_business_bridge.formatting import HTML, to_html, visible_text
 from tg_business_bridge.sender import send_business_reply
@@ -35,7 +37,8 @@ def _card_markup(draft_id: int, settings: Settings) -> InlineKeyboardMarkup:
         buttons.append(
             InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"draft:{draft_id}:edit")
         )
-    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+    pause = [InlineKeyboardButton(text="🔕 Пауза", callback_data=f"draft:{draft_id}:pause")]
+    return InlineKeyboardMarkup(inline_keyboard=[buttons, pause])
 
 
 _CARD_LIMIT = 3500
@@ -45,7 +48,21 @@ _TRUNCATE_MARKER = "… [обрезано, полный текст будет о
 _CUT_ENTITY_RE = re.compile(r"&[a-z]*$")
 
 
-def _card_text(draft: sqlite3.Row, contact: str) -> str:
+def _attachments_line(attachments: list[dict]) -> str:
+    """«📎 2 вложения: photo.jpg (1.2 MB), contract.pdf (340 KB)» — обычный текст."""
+    n = len(attachments)
+    word = "вложение" if n == 1 else "вложения" if 2 <= n <= 4 else "вложений"  # n <= 10
+    parts = []
+    for a in attachments:
+        name = a["filename"] or a["kind"]
+        if len(name) > 64:
+            name = name[:63] + "…"
+        size = media.human_size(a["file_size"])
+        parts.append(f"{name} ({size})" if size else name)
+    return f"📎 {n} {word}: " + ", ".join(parts)
+
+
+def _card_text(draft: sqlite3.Row, contact: str, attachments: list[dict] | None = None) -> str:
     """Карточка владельцу — всегда Telegram HTML (отправлять её нужно с parse_mode='HTML')."""
     # имя контакта приходит из Telegram и не ограничено схемой БД —
     # без обрезки длинное имя съедает лимит и карточка может превысить 4096
@@ -54,12 +71,15 @@ def _card_text(draft: sqlite3.Row, contact: str) -> str:
     safe_contact = html.escape(contact, quote=False)
     header = f"Черновик ответа для {safe_contact} (chat {draft['chat_id']}):\n\n"
     body = to_html(draft["text"], draft["parse_mode"])
-    if len(header) + len(body) <= _CARD_LIMIT:
-        return header + body
+    footer = ""
+    if attachments:
+        footer = "\n\n" + html.escape(_attachments_line(attachments), quote=False)
+    if len(header) + len(body) + len(footer) <= _CARD_LIMIT:
+        return header + body + footer
     # HTML нельзя резать посреди тега: длинная карточка теряет форматирование, но не ломается
-    limit = max(0, _CARD_LIMIT - len(header) - len(_TRUNCATE_MARKER))
+    limit = max(0, _CARD_LIMIT - len(header) - len(footer) - len(_TRUNCATE_MARKER))
     plain = html.escape(visible_text(draft["text"], draft["parse_mode"]), quote=False)[:limit]
-    return header + _CUT_ENTITY_RE.sub("", plain) + _TRUNCATE_MARKER
+    return header + _CUT_ENTITY_RE.sub("", plain) + _TRUNCATE_MARKER + footer
 
 
 # До этого момента (time.monotonic) карточки не отправляются: Telegram попросил
@@ -76,7 +96,7 @@ async def _send_card(
     settings: Settings,
 ) -> None:
     contact = _contact_name(conn, draft["chat_id"])
-    text = _card_text(draft, contact)
+    text = _card_text(draft, contact, db.get_draft_attachments(conn, draft["id"]))
     sent = await bot.send_message(
         chat_id=connection["owner_id"], text=text, parse_mode=HTML,
         reply_markup=_card_markup(draft["id"], settings),
@@ -85,9 +105,10 @@ async def _send_card(
     db.set_draft_status(conn, draft["id"], "awaiting")
 
     for old in db.supersede_awaiting(conn, draft["chat_id"], draft["id"]):
+        media.remove_outbox(settings.data_dir, old["id"])
         if old["card_message_id"] is None:
             continue
-        old_text = _card_text(old, contact)
+        old_text = _card_text(old, contact, db.get_draft_attachments(conn, old["id"]))
         try:
             await bot.edit_message_text(
                 chat_id=connection["owner_id"],
@@ -127,18 +148,21 @@ async def process_new_drafts(bot: Bot, conn: sqlite3.Connection, settings: Setti
                 db.set_draft_status(
                     conn, draft["id"], "failed", f"Telegram отклонил карточку: {exc}"
                 )
+                media.remove_outbox(settings.data_dir, draft["id"])
             except Exception:  # noqa: BLE001 - сбойная карточка не должна блокировать остальные
                 log.exception("не удалось отправить карточку черновика %s", draft["id"])
 
     for draft in db.get_drafts_by_status(conn, "approved"):
         if not db.claim_draft(conn, draft["id"]):
             continue  # уже забрано другим процессом/итерацией
+        attachments = db.get_draft_attachments(conn, draft["id"])
         if len(visible_text(draft["text"], draft["parse_mode"])) > 4096:
             res = {"ok": False, "error": "текст длиннее 4096 символов — Telegram не примет"}
         else:
             try:
                 res = await send_business_reply(
-                    bot, conn, draft["chat_id"], draft["text"], draft["parse_mode"]
+                    bot, conn, draft["chat_id"], draft["text"], draft["parse_mode"],
+                    _input_files(settings, attachments),
                 )
             except Exception as exc:  # noqa: BLE001 - черновик не должен зависнуть в 'sending'
                 log.exception("непредвиденная ошибка отправки черновика %s", draft["id"])
@@ -147,9 +171,10 @@ async def process_new_drafts(bot: Bot, conn: sqlite3.Connection, settings: Setti
             db.set_draft_status(conn, draft["id"], "sent")
         else:
             db.set_draft_status(conn, draft["id"], "failed", res["error"])
+        media.remove_outbox(settings.data_dir, draft["id"])
 
         if draft["card_message_id"]:
-            base_text = _card_text(draft, _contact_name(conn, draft["chat_id"]))
+            base_text = _card_text(draft, _contact_name(conn, draft["chat_id"]), attachments)
             if res["ok"]:
                 suffix = "\n\n✅ Отправлено"
             else:
@@ -164,6 +189,16 @@ async def process_new_drafts(bot: Bot, conn: sqlite3.Connection, settings: Setti
                 )
             except Exception as exc:  # noqa: BLE001 - редактирование карточки не критично
                 log.warning("не удалось отредактировать карточку черновика %s: %s", draft["id"], exc)
+
+
+def _input_files(settings: Settings, attachments: list[dict]) -> list[dict]:
+    """Вложения черновика в виде для отправки: из архива — file_id (Telegram не качает
+    файл заново), загруженные агентом — файл из outbox под исходным именем."""
+    return [
+        {"kind": a["kind"],
+         "file": a["file_id"] or FSInputFile(settings.data_dir / a["path"], filename=a["filename"])}
+        for a in attachments
+    ]
 
 
 async def watch_drafts(
@@ -230,7 +265,11 @@ async def on_draft_callback(
 
     # Validate action is in allowed set ('reject' — с карточек, разосланных до появления
     # кнопки «Редактировать»: они должны продолжать работать)
-    if action not in {"approve", "reject", "edit"}:
+    if action not in {"approve", "reject", "edit", "pause"}:
+        await cb.answer()
+        return
+
+    if not _is_owner(conn, cb.from_user):
         await cb.answer()
         return
 
@@ -307,14 +346,22 @@ async def on_draft_callback(
         await cb.answer("Отправляю")
         await _cleanup_editor_ui(bot, conn, cb.message.chat.id, draft)
     else:
-        # Reject: вотчер никогда не трогает 'rejected', гонки с ним нет — флип первым.
+        # Reject и пауза: вотчер никогда не трогает 'rejected', гонки с ним нет — флип первым.
         if not db.set_draft_status_if(conn, draft_id, "awaiting", "rejected"):
             await cb.answer("Черновик уже неактуален")
             return
-        await cb.answer("Отклонено")
+        media.remove_outbox(settings.data_dir, draft_id)
+        if action == "pause":
+            for did in db.pause_chat(conn, draft["chat_id"]):
+                media.remove_outbox(settings.data_dir, did)
+            await cb.answer("Чат на паузе")
+            mark = "🔕 Чат на паузе: черновики агента для него не принимаются. Снять — /paused"
+        else:
+            await cb.answer("Отклонено")
+            mark = "❌ Отклонено"
         try:
             await cb.message.edit_text(
-                text=cb.message.html_text + "\n\n❌ Отклонено", parse_mode=HTML, reply_markup=None
+                text=cb.message.html_text + "\n\n" + mark, parse_mode=HTML, reply_markup=None
             )
         except Exception as exc:  # noqa: BLE001 - редактирование карточки не критично
             log.warning("не удалось отредактировать карточку черновика %s: %s", draft_id, exc)
@@ -352,7 +399,9 @@ async def _repost_card(
 
     Сначала новая карточка, только потом уборка старой: если отправка сорвётся,
     у владельца останется рабочая старая карточка, а не черновик вообще без кнопок."""
-    text = _card_text(draft, _contact_name(conn, draft["chat_id"]))
+    text = _card_text(
+        draft, _contact_name(conn, draft["chat_id"]), db.get_draft_attachments(conn, draft["id"])
+    )
     old_card_id = draft["card_message_id"]
     sent = await bot.send_message(
         chat_id=owner_id, text=text, parse_mode=HTML,
@@ -416,3 +465,50 @@ async def on_editor_result(
     await _drop_editor_keyboard(bot, owner_id)
     # отдельного «черновик обновлён» нет: подтверждение — сама свежая карточка внизу
     await _repost_card(bot, conn, owner_id, draft, settings)
+
+
+def _paused_view(conn: sqlite3.Connection) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Список чатов на паузе с кнопкой снятия под каждым — обычный текст, без разметки."""
+    chats = db.list_paused_chats(conn)
+    if not chats:
+        return "Чатов на паузе нет.", None
+    lines = ["Чаты на паузе — черновики агента для них не принимаются:"]
+    rows = []
+    for c in chats:
+        name = c["sender_name"] or str(c["chat_id"])
+        if len(name) > 64:
+            name = name[:63] + "…"
+        username = f" (@{c['username']})" if isinstance(c["username"], str) else ""
+        lines.append(f"• {name}{username}, chat {c['chat_id']}")
+        rows.append([InlineKeyboardButton(
+            text=f"▶️ Снять паузу: {name[:32]}", callback_data=f"unpause:{c['chat_id']}"
+        )])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _is_owner(conn: sqlite3.Connection, user) -> bool:
+    connection = db.get_enabled_connection(conn)
+    return connection is not None and user is not None and user.id == connection["owner_id"]
+
+
+@router.message(Command("paused"))
+async def on_paused_command(msg: Message, conn: sqlite3.Connection) -> None:
+    if not _is_owner(conn, msg.from_user):
+        return  # список чатов — личные данные владельца
+    text, markup = _paused_view(conn)
+    await msg.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("unpause:"))
+async def on_unpause_callback(cb: CallbackQuery, conn: sqlite3.Connection) -> None:
+    chat_id_s = cb.data.split(":", 1)[1]
+    if not _is_owner(conn, cb.from_user) or not chat_id_s.lstrip("-").isdigit():
+        await cb.answer()
+        return
+    db.unpause_chat(conn, int(chat_id_s))
+    await cb.answer("Пауза снята")
+    text, markup = _paused_view(conn)
+    try:
+        await cb.message.edit_text(text=text, reply_markup=markup)
+    except Exception as exc:  # noqa: BLE001 - редактирование списка не критично
+        log.warning("не удалось обновить список чатов на паузе: %s", exc)
