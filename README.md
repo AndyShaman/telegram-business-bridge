@@ -202,8 +202,9 @@ How it works under the hood — and why it is private:
 - The editor page (`docs/editor.html`) is a **static, self-contained HTML file**:
   no backend, no analytics, no storage, no external requests except Telegram's
   official `telegram-web-app.js`. Its built-in Content Security Policy forbids
-  any network request, so even a script the host injects on its own (a visit
-  counter) cannot send anything out.
+  network requests. It covers everything that comes after it in the page; to
+  cover the whole page, have the host send the same string as a
+  `Content-Security-Policy` header too.
 - The draft text travels to the page in the **URL fragment** (`#...`), which
   browsers never send to the hosting server — the host only ever sees a request
   for the empty page shell. The edited text returns to the bot through Telegram's
