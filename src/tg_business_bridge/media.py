@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import shutil
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -45,6 +46,25 @@ async def download_media(bot: Bot, row: dict, media_dir: Path) -> str | None:
     except (TelegramAPIError, OSError) as e:
         log.warning("media download failed for %s: %s", row.get("file_id"), e)
         return None
+
+
+def human_size(n: int | None) -> str | None:
+    if n is None:
+        return None
+    if n >= 1024 * 1024:
+        return f"{n / 1024 / 1024:.1f} MB"
+    return f"{max(1, round(n / 1024))} KB"
+
+
+def outbox_dir(data_dir: Path, draft_id: int) -> Path:
+    """Каталог файлов, которые агент приложил к черновику (пишет MCP-сервер, шлёт демон)."""
+    return data_dir / "outbox" / str(draft_id)
+
+
+def remove_outbox(data_dir: Path, draft_id: int) -> None:
+    """Убирает файлы вложений черновика, когда его судьба решена (отправлен, отклонён,
+    заменён, упал): повторно отправить такой черновик нельзя, а личные файлы копиться не должны."""
+    shutil.rmtree(outbox_dir(data_dir, draft_id), ignore_errors=True)
 
 
 def cleanup_expired_media(conn: sqlite3.Connection, settings: Settings) -> int:

@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,17 @@ CREATE TABLE IF NOT EXISTS drafts (
     edit_prompt_message_id INTEGER,
     parse_mode TEXT
 );
+CREATE TABLE IF NOT EXISTS draft_attachments (
+    id INTEGER PRIMARY KEY,
+    draft_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    file_id TEXT,
+    path TEXT,
+    filename TEXT,
+    file_size INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_draft_attachments_draft ON draft_attachments(draft_id, position);
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     text, content='messages', content_rowid='id', tokenize='unicode61'
 );
@@ -211,17 +223,51 @@ def add_message_event(
     conn.commit()
 
 
+_ATTACHMENT_COLS = ["kind", "file_id", "path", "filename", "file_size"]
+
+
 def create_draft(
     conn: sqlite3.Connection, chat_id: int, text: str, status: str,
     parse_mode: str | None = None,
+    attachments: Callable[[int], list[dict]] | None = None,
 ) -> int:
-    """parse_mode: None — обычный текст, 'HTML' — разметка Telegram HTML."""
-    cur = conn.execute(
-        "INSERT INTO drafts (chat_id, text, status, created_ts, parse_mode) VALUES (?, ?, ?, ?, ?)",
-        (chat_id, text, status, int(time.time()), parse_mode),
-    )
-    conn.commit()
-    return cur.lastrowid
+    """parse_mode: None — обычный текст, 'HTML' — разметка Telegram HTML.
+
+    attachments(draft_id) -> записи вложений (kind, file_id | path, filename, file_size):
+    вызывается внутри той же транзакции, до commit — демон не увидит черновик, пока
+    файлы вложений не записаны. Исключение из него откатывает и сам черновик."""
+    try:
+        cur = conn.execute(
+            "INSERT INTO drafts (chat_id, text, status, created_ts, parse_mode) VALUES (?, ?, ?, ?, ?)",
+            (chat_id, text, status, int(time.time()), parse_mode),
+        )
+        did = cur.lastrowid
+        if attachments is not None:
+            for pos, item in enumerate(attachments(did)):
+                conn.execute(
+                    f"INSERT INTO draft_attachments (draft_id, position, {', '.join(_ATTACHMENT_COLS)}) "
+                    f"VALUES (?, ?, {', '.join('?' for _ in _ATTACHMENT_COLS)})",
+                    (did, pos, *(item.get(c) for c in _ATTACHMENT_COLS)),
+                )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return did
+
+
+def get_draft_attachments(conn: sqlite3.Connection, draft_id: int) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM draft_attachments WHERE draft_id=? ORDER BY position", (draft_id,)
+    ).fetchall()]
+
+
+def get_message(conn: sqlite3.Connection, chat_id: int, message_id: int) -> sqlite3.Row | None:
+    """Последняя (по id) строка с этой парой chat_id+message_id — пара схемой не уникальна."""
+    return conn.execute(
+        "SELECT * FROM messages WHERE chat_id=? AND message_id=? ORDER BY id DESC LIMIT 1",
+        (chat_id, message_id),
+    ).fetchone()
 
 
 def get_draft(conn: sqlite3.Connection, draft_id: int) -> sqlite3.Row | None:
