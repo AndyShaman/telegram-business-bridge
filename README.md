@@ -25,7 +25,7 @@ switchable off in Settings at any moment. There is simply nothing to ban you for
 
 **"I'm afraid to let an AI send messages as me."**
 Reasonable. By default the agent can only *draft* a reply. You get a card in Telegram
-with the text and two buttons — ✅ Send / ✏️ Edit. Nothing leaves without your tap,
+with the text and buttons — ✅ Send / ✏️ Edit / 🔕 Pause. Nothing leaves without your tap,
 and if the wording is almost-but-not-quite right, you fix it in an editor window
 right inside Telegram instead of retyping the whole reply.
 Auto-send is strictly opt-in: enable it per chat (`BRIDGE_AUTO_SEND_CHAT_IDS`) for
@@ -41,7 +41,7 @@ its own memory on top of this is described in [AGENTS.md](AGENTS.md).)
 
 **"I don't want to marry one AI vendor."**
 The bridge is a standard [MCP](https://modelcontextprotocol.io) server. Claude Code
-today, anything else tomorrow — any MCP client gets the same seven tools. Your data
+today, anything else tomorrow — any MCP client gets the same nine tools. Your data
 stays in one local SQLite file either way.
 
 ### Userbot vs this bridge
@@ -77,13 +77,26 @@ Telegram Business API
 
 ## Features
 
-- 7 MCP tools: `list_chats`, `get_history`, `search_messages`, `get_context`,
-  `draft_reply`, `send_reply`, `list_drafts`.
+- 9 MCP tools: `list_chats`, `get_history`, `search_messages`, `get_context`,
+  `read_media`, `draft_reply`, `send_reply`, `list_drafts`, `list_recent_edits`.
+- Files in drafts: `draft_reply`/`send_reply` take `attachments` — re-send a file
+  from the archive by reference (any size, no re-upload) or upload a new one
+  (up to 50 MB, base64). One file goes as a photo/video/document/audio/voice, 2–10
+  as an album; the card shows `📎 2 attachments: …` with names and sizes. Uploaded
+  files wait in `data/outbox/` (0700/0600) and are deleted once the draft is decided.
+- File content for the agent: `read_media` returns an archived image as an image,
+  txt/md/csv/json/log and PDF as text, voice/video as its transcript — wrapped as
+  untrusted data like messages.
 - Formatted replies: agents pass `html=True` to `draft_reply`/`send_reply` for
   Telegram HTML (bold, italic, code, and links inside the text).
 - Draft approval cards (✅ Send / ✏️ Edit) with live status (⏳ Sending… → ✅ Sent /
   ⚠️ Failed); when a new draft arrives for the same chat, the older card is marked
   "⏭ Superseded by a newer draft".
+- 🔕 Pause on the card: the agent gets no more drafts into that chat until you lift
+  the pause; `/paused` in the bot chat lists paused chats with ▶️ buttons to resume.
+- The agent's first version is kept when you edit a draft; `list_recent_edits`
+  shows it next to what was sent, so the agent learns from your corrections.
+- Polls, checklists, contacts and venues land in the archive with searchable text.
 - Draft editing in a Telegram Mini App: ✏️ opens an editor window with the draft
   text, you fix it, the card updates in place — then ✅ Send as usual
   (see [Editing drafts](#editing-drafts-mini-app)).
@@ -260,7 +273,8 @@ Changing any of these requires restarting the affected process (daemon and/or MC
 
 - you can reply only in chats with an incoming message within the last 24 hours;
 - no history from before the connection; groups/channels are not visible;
-- files > 20 MB are not downloaded (file_id is stored);
+- files > 20 MB are not downloaded (file_id is stored; the agent can still re-send
+  them by reference); uploads from the agent are capped at 50 MB;
 - reactions on behalf of the owner are not possible;
 - the `business_connection` event is delivered unreliably (may never arrive) —
   the daemon picks the connection up itself via `getBusinessConnection` on the
