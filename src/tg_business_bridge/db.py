@@ -63,7 +63,9 @@ CREATE TABLE IF NOT EXISTS drafts (
     created_ts INTEGER NOT NULL,
     card_message_id INTEGER,
     edit_prompt_message_id INTEGER,
-    parse_mode TEXT
+    parse_mode TEXT,
+    original_text TEXT,
+    original_parse_mode TEXT
 );
 CREATE TABLE IF NOT EXISTS draft_attachments (
     id INTEGER PRIMARY KEY,
@@ -76,6 +78,10 @@ CREATE TABLE IF NOT EXISTS draft_attachments (
     file_size INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_draft_attachments_draft ON draft_attachments(draft_id, position);
+CREATE TABLE IF NOT EXISTS paused_chats (
+    chat_id INTEGER PRIMARY KEY,
+    ts INTEGER NOT NULL
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     text, content='messages', content_rowid='id', tokenize='unicode61'
 );
@@ -121,7 +127,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
     # БД, созданные до появления редактора черновиков, колонки не имеют — CREATE TABLE
     # IF NOT EXISTS их не обновит (r[1] — имя колонки в PRAGMA table_info)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(drafts)")}
-    for name, decl in (("edit_prompt_message_id", "INTEGER"), ("parse_mode", "TEXT")):
+    for name, decl in (
+        ("edit_prompt_message_id", "INTEGER"), ("parse_mode", "TEXT"),
+        ("original_text", "TEXT"), ("original_parse_mode", "TEXT"),
+    ):
         if name in cols:
             continue
         try:
@@ -305,9 +314,16 @@ def update_draft_text(
     conn: sqlite3.Connection, draft_id: int, text: str, parse_mode: str | None = None,
 ) -> bool:
     """Заменяет текст и разметку черновика, пока тот ждёт решения владельца. False, если
-    статус уже не 'awaiting': правка не должна догонять отправленный или заменённый черновик."""
+    статус уже не 'awaiting': правка не должна догонять отправленный или заменённый черновик.
+    Первая версия агента сохраняется в original_text/original_parse_mode при первой правке
+    (в SET SQLite видит старые значения строки, так что повторная правка её не перетрёт)."""
     cur = conn.execute(
-        "UPDATE drafts SET text=?, parse_mode=? WHERE id=? AND status='awaiting'",
+        """UPDATE drafts SET
+             original_parse_mode = CASE WHEN original_text IS NULL THEN parse_mode
+                                        ELSE original_parse_mode END,
+             original_text = COALESCE(original_text, text),
+             text=?, parse_mode=?
+           WHERE id=? AND status='awaiting'""",
         (text, parse_mode, draft_id),
     )
     conn.commit()
@@ -386,6 +402,43 @@ def supersede_awaiting(
     return updated
 
 
+def list_edited_drafts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Отправленные черновики, которые владелец правил перед отправкой, новые первыми."""
+    return conn.execute(
+        "SELECT * FROM drafts WHERE status='sent' AND original_text IS NOT NULL ORDER BY id DESC"
+    ).fetchall()
+
+
+def pause_chat(conn: sqlite3.Connection, chat_id: int) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO paused_chats (chat_id, ts) VALUES (?, ?)", (chat_id, int(time.time()))
+    )
+    conn.commit()
+
+
+def unpause_chat(conn: sqlite3.Connection, chat_id: int) -> bool:
+    cur = conn.execute("DELETE FROM paused_chats WHERE chat_id=?", (chat_id,))
+    conn.commit()
+    return cur.rowcount == 1
+
+
+def is_chat_paused(conn: sqlite3.Connection, chat_id: int) -> bool:
+    return conn.execute("SELECT 1 FROM paused_chats WHERE chat_id=?", (chat_id,)).fetchone() is not None
+
+
+def list_paused_chats(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """SELECT p.chat_id, p.ts,
+                  (SELECT sender_name FROM messages m WHERE m.chat_id = p.chat_id
+                   AND m.direction='in' ORDER BY ts DESC, id DESC LIMIT 1) AS sender_name,
+                  (SELECT json_extract(raw_json, '$.from_user.username') FROM messages m
+                   WHERE m.chat_id = p.chat_id AND m.direction='in'
+                   ORDER BY ts DESC, id DESC LIMIT 1) AS username
+           FROM paused_chats p ORDER BY p.ts, p.chat_id"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def last_incoming_message_id(conn: sqlite3.Connection, chat_id: int) -> int | None:
     row = conn.execute(
         "SELECT message_id FROM messages WHERE chat_id=? AND direction='in' ORDER BY ts DESC, id DESC LIMIT 1",
@@ -421,7 +474,8 @@ def list_chats(conn: sqlite3.Connection, active_since_ts: int | None = None) -> 
                      ORDER BY ts DESC LIMIT 1) AS last_sender_name,
                     (SELECT json_extract(raw_json, '$.from_user.username') FROM messages m3
                      WHERE m3.chat_id = m.chat_id AND m3.direction='in'
-                     ORDER BY ts DESC LIMIT 1) AS username
+                     ORDER BY ts DESC LIMIT 1) AS username,
+                    EXISTS (SELECT 1 FROM paused_chats p WHERE p.chat_id = m.chat_id) AS paused
              FROM messages m GROUP BY chat_id"""
     if active_since_ts is not None:
         sql += " HAVING max(ts) >= :since"

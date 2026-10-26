@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+from aiogram.filters import Command
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
@@ -36,7 +37,8 @@ def _card_markup(draft_id: int, settings: Settings) -> InlineKeyboardMarkup:
         buttons.append(
             InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"draft:{draft_id}:edit")
         )
-    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+    pause = [InlineKeyboardButton(text="🔕 Пауза", callback_data=f"draft:{draft_id}:pause")]
+    return InlineKeyboardMarkup(inline_keyboard=[buttons, pause])
 
 
 _CARD_LIMIT = 3500
@@ -263,7 +265,7 @@ async def on_draft_callback(
 
     # Validate action is in allowed set ('reject' — с карточек, разосланных до появления
     # кнопки «Редактировать»: они должны продолжать работать)
-    if action not in {"approve", "reject", "edit"}:
+    if action not in {"approve", "reject", "edit", "pause"}:
         await cb.answer()
         return
 
@@ -340,15 +342,21 @@ async def on_draft_callback(
         await cb.answer("Отправляю")
         await _cleanup_editor_ui(bot, conn, cb.message.chat.id, draft)
     else:
-        # Reject: вотчер никогда не трогает 'rejected', гонки с ним нет — флип первым.
+        # Reject и пауза: вотчер никогда не трогает 'rejected', гонки с ним нет — флип первым.
         if not db.set_draft_status_if(conn, draft_id, "awaiting", "rejected"):
             await cb.answer("Черновик уже неактуален")
             return
         media.remove_outbox(settings.data_dir, draft_id)
-        await cb.answer("Отклонено")
+        if action == "pause":
+            db.pause_chat(conn, draft["chat_id"])
+            await cb.answer("Чат на паузе")
+            mark = "🔕 Чат на паузе: черновики агента для него не принимаются. Снять — /paused"
+        else:
+            await cb.answer("Отклонено")
+            mark = "❌ Отклонено"
         try:
             await cb.message.edit_text(
-                text=cb.message.html_text + "\n\n❌ Отклонено", parse_mode=HTML, reply_markup=None
+                text=cb.message.html_text + "\n\n" + mark, parse_mode=HTML, reply_markup=None
             )
         except Exception as exc:  # noqa: BLE001 - редактирование карточки не критично
             log.warning("не удалось отредактировать карточку черновика %s: %s", draft_id, exc)
@@ -453,3 +461,49 @@ async def on_editor_result(
     # отдельного «черновик обновлён» нет: подтверждение — сама свежая карточка внизу
     await _repost_card(bot, conn, owner_id, draft, settings)
 
+
+def _paused_view(conn: sqlite3.Connection) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Список чатов на паузе с кнопкой снятия под каждым — обычный текст, без разметки."""
+    chats = db.list_paused_chats(conn)
+    if not chats:
+        return "Чатов на паузе нет.", None
+    lines = ["Чаты на паузе — черновики агента для них не принимаются:"]
+    rows = []
+    for c in chats:
+        name = c["sender_name"] or str(c["chat_id"])
+        if len(name) > 64:
+            name = name[:63] + "…"
+        username = f" (@{c['username']})" if isinstance(c["username"], str) else ""
+        lines.append(f"• {name}{username}, chat {c['chat_id']}")
+        rows.append([InlineKeyboardButton(
+            text=f"▶️ Снять паузу: {name[:32]}", callback_data=f"unpause:{c['chat_id']}"
+        )])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _is_owner(conn: sqlite3.Connection, user) -> bool:
+    connection = db.get_enabled_connection(conn)
+    return connection is not None and user is not None and user.id == connection["owner_id"]
+
+
+@router.message(Command("paused"))
+async def on_paused_command(msg: Message, conn: sqlite3.Connection) -> None:
+    if not _is_owner(conn, msg.from_user):
+        return  # список чатов — личные данные владельца
+    text, markup = _paused_view(conn)
+    await msg.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("unpause:"))
+async def on_unpause_callback(cb: CallbackQuery, conn: sqlite3.Connection) -> None:
+    chat_id_s = cb.data.split(":", 1)[1]
+    if not _is_owner(conn, cb.from_user) or not chat_id_s.lstrip("-").isdigit():
+        await cb.answer()
+        return
+    db.unpause_chat(conn, int(chat_id_s))
+    await cb.answer("Пауза снята")
+    text, markup = _paused_view(conn)
+    try:
+        await cb.message.edit_text(text=text, reply_markup=markup)
+    except Exception as exc:  # noqa: BLE001 - редактирование списка не критично
+        log.warning("не удалось обновить список чатов на паузе: %s", exc)
