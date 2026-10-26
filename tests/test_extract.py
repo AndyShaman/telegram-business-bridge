@@ -83,3 +83,75 @@ def test_incoming_with_link_preview_serializes():
     row = extract_message_row(m, bot_id=99)
     assert row["direction"] == "in"
     assert "example.com" in row["raw_json"]
+
+
+POLL = {
+    "id": "p1", "question": "Куда едем?", "total_voter_count": 0, "is_closed": False,
+    "is_anonymous": True, "type": "regular", "allows_multiple_answers": False,
+    "allows_revoting": True, "members_only": False,
+    "options": [
+        {"persistent_id": "o1", "text": "Горы", "voter_count": 0},
+        {"persistent_id": "o2", "text": "Море", "voter_count": 0},
+    ],
+}
+
+
+def test_poll_kind_and_searchable_text():
+    row = extract_message_row(_m(poll=POLL), bot_id=99)
+    assert row["media_type"] == "poll"
+    assert row["file_id"] is None
+    assert "Куда едем?" in row["text"]
+    assert "Горы" in row["text"] and "Море" in row["text"]
+
+
+def test_poll_found_by_fts(conn):
+    from tg_business_bridge import db
+
+    row = extract_message_row(_m(poll=POLL), bot_id=99)
+    db.insert_message(conn, row)
+    found = db.search_messages(conn, "Море", None, None, None, None, 10)
+    assert [r["message_id"] for r in found] == [5]
+
+
+def test_checklist_marks_done_tasks():
+    m = _m(checklist={
+        "title": "Сборы",
+        "tasks": [
+            {"id": 1, "text": "Паспорт", "completion_date": 1751800100},
+            {"id": 2, "text": "Зарядка"},
+        ],
+    })
+    row = extract_message_row(m, bot_id=99)
+    assert row["media_type"] == "checklist"
+    assert "Сборы" in row["text"]
+    assert "[x] Паспорт" in row["text"]
+    assert "[ ] Зарядка" in row["text"]
+
+
+def test_paid_media_kind_keeps_caption():
+    m = _m(paid_media={"star_count": 5, "paid_media": []}, caption="платный пост")
+    row = extract_message_row(m, bot_id=99)
+    assert row["media_type"] == "paid_media"
+    assert row["text"] == "платный пост"
+
+
+def test_contact_text_has_name_and_phone():
+    m = _m(contact={"phone_number": "+375291112233", "first_name": "Иван", "last_name": "Петров"})
+    row = extract_message_row(m, bot_id=99)
+    assert row["media_type"] == "contact"
+    assert "Иван" in row["text"] and "Петров" in row["text"] and "+375291112233" in row["text"]
+
+
+def test_venue_text_has_title_and_address():
+    m = _m(venue={
+        "location": {"latitude": 53.9, "longitude": 27.5},
+        "title": "Кафе Север", "address": "ул. Ленина, 1",
+    })
+    row = extract_message_row(m, bot_id=99)
+    assert row["media_type"] == "venue"
+    assert "Кафе Север" in row["text"] and "ул. Ленина, 1" in row["text"]
+
+
+def test_location_kind():
+    row = extract_message_row(_m(location={"latitude": 53.9, "longitude": 27.5}), bot_id=99)
+    assert row["media_type"] == "location"

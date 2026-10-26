@@ -151,3 +151,55 @@ def test_claim_draft(conn):
     assert db.get_draft(conn, did)["status"] == "sending"
     # уже забрано — повторный claim не проходит
     assert db.claim_draft(conn, did) is False
+
+
+def test_original_text_preserved_across_two_edits(conn):
+    did = db.create_draft(conn, 777, "версия агента", "awaiting")
+    assert db.get_draft(conn, did)["original_text"] is None  # до правок оригинала нет
+
+    assert db.update_draft_text(conn, did, "<b>правка 1</b>", "HTML") is True
+    assert db.update_draft_text(conn, did, "правка 2") is True
+
+    row = db.get_draft(conn, did)
+    assert row["text"] == "правка 2" and row["parse_mode"] is None
+    assert row["original_text"] == "версия агента"
+    assert row["original_parse_mode"] is None
+
+
+def test_original_parse_mode_kept_for_html_draft(conn):
+    did = db.create_draft(conn, 777, "<i>агент</i>", "awaiting", "HTML")
+    db.update_draft_text(conn, did, "владелец")
+    db.update_draft_text(conn, did, "владелец ещё раз")
+    row = db.get_draft(conn, did)
+    assert row["original_text"] == "<i>агент</i>" and row["original_parse_mode"] == "HTML"
+
+
+def test_failed_edit_does_not_set_original(conn):
+    did = db.create_draft(conn, 777, "агент", "sent")
+    assert db.update_draft_text(conn, did, "поздно") is False
+    assert db.get_draft(conn, did)["original_text"] is None
+
+
+def test_init_schema_adds_original_columns_to_old_db(tmp_path):
+    import sqlite3
+
+    raw = sqlite3.connect(tmp_path / "old.db")
+    raw.execute(
+        """CREATE TABLE drafts (
+            id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, text TEXT NOT NULL,
+            status TEXT NOT NULL, error TEXT, created_ts INTEGER NOT NULL,
+            card_message_id INTEGER, edit_prompt_message_id INTEGER, parse_mode TEXT)"""
+    )
+    raw.execute(
+        "INSERT INTO drafts (chat_id, text, status, created_ts) VALUES (777, 'старый', 'sent', 1)"
+    )
+    raw.commit()
+
+    db.init_schema(raw)
+    db.init_schema(raw)  # повторный старт не падает
+
+    cols = [r[1] for r in raw.execute("PRAGMA table_info(drafts)")]
+    assert "original_text" in cols and "original_parse_mode" in cols
+    row = raw.execute("SELECT * FROM drafts").fetchone()
+    assert row[cols.index("original_text")] is None
+    raw.close()
