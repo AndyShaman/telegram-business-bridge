@@ -67,6 +67,19 @@ def remove_outbox(data_dir: Path, draft_id: int) -> None:
     shutil.rmtree(outbox_dir(data_dir, draft_id), ignore_errors=True)
 
 
+def sweep_outbox(conn: sqlite3.Connection, data_dir: Path) -> int:
+    """При старте демона: убирает каталоги вложений черновиков, которых нет в БД или чья
+    судьба уже решена (упали между сменой статуса и уборкой, откат после записи файлов)."""
+    root = data_dir / "outbox"
+    removed = 0
+    for d in root.iterdir() if root.is_dir() else ():
+        draft = db.get_draft(conn, int(d.name)) if d.name.isdigit() else None
+        if draft is None or draft["status"] in ("sent", "rejected", "superseded", "failed"):
+            shutil.rmtree(d, ignore_errors=True)
+            removed += 1
+    return removed
+
+
 def cleanup_expired_media(conn: sqlite3.Connection, settings: Settings) -> int:
     """Удаляет с диска файлы медиа старше settings.media_retention_days дней и обнуляет
     media_path в БД. Текст сообщения и raw_json не трогаются — тексты хранятся вечно.

@@ -138,6 +138,7 @@ async def test_callback_approve_and_reject(ready_conn, settings):  # noqa: F811
 
     def _cb(data):
         cb = AsyncMock()
+        cb.from_user.id = 42  # владелец из ready_conn
         cb.data = data
         return cb
 
@@ -153,6 +154,7 @@ async def test_reject_callback_edits_card(ready_conn, settings):  # noqa: F811
     db.set_draft_card(ready_conn, did, 111)
     bot = AsyncMock()
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:reject"
     cb.message = AsyncMock()
     cb.message.html_text = "Черновик ответа для X (chat 777):\n\nb"
@@ -171,6 +173,7 @@ async def test_approve_callback_edits_card(ready_conn, settings):  # noqa: F811
     db.set_draft_card(ready_conn, did, 111)
     bot = AsyncMock()
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:approve"
     cb.message = AsyncMock()
     cb.message.html_text = "Черновик ответа для X (chat 777):\n\nb"
@@ -232,6 +235,7 @@ async def test_approve_guard_rejects_when_status_changed_before_write(
 
     bot = AsyncMock()
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:approve"
     cb.message = AsyncMock()
     cb.message.html_text = "Черновик ответа для X (chat 777):\n\nb"
@@ -310,6 +314,7 @@ async def test_malformed_callback_data_ignored(ready_conn, settings):  # noqa: F
 
     def _cb(data):
         cb = AsyncMock()
+        cb.from_user.id = 42  # владелец из ready_conn
         cb.data = data
         return cb
 
@@ -479,6 +484,7 @@ async def test_callback_on_superseded_draft_leaves_status(ready_conn, settings):
     did = db.create_draft(ready_conn, 777, "заменённый", "superseded")
     bot = AsyncMock()
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:approve"
 
     await on_draft_callback(cb, conn=ready_conn, bot=bot, settings=settings)
@@ -512,6 +518,7 @@ async def test_edit_callback_offers_editor_button(ready_conn, settings):  # noqa
     bot = AsyncMock()
     bot.send_message.return_value.message_id = 501
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:edit"
     cb.message.chat.id = 42
 
@@ -537,6 +544,7 @@ async def test_edit_callback_replaces_previous_prompt(ready_conn, settings):  # 
     bot = AsyncMock()
     bot.send_message.return_value.message_id = 600
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:edit"
     cb.message.chat.id = 42
 
@@ -553,6 +561,7 @@ async def test_edit_callback_without_editor_url_answers(ready_conn, settings):  
     settings.editor_url = ""
     bot = AsyncMock()
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:edit"
 
     await on_draft_callback(cb, conn=ready_conn, bot=bot, settings=settings)
@@ -570,6 +579,7 @@ async def test_edit_callback_send_failure_answers_callback(ready_conn, settings)
     bot = AsyncMock()
     bot.send_message.side_effect = RuntimeError("BUTTON_URL_INVALID")
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:edit"
 
     await on_draft_callback(cb, conn=ready_conn, bot=bot, settings=settings)
@@ -584,6 +594,7 @@ async def test_edit_callback_on_stale_draft_does_nothing(ready_conn, settings): 
     did = db.create_draft(ready_conn, 777, "уже отправлен", "sent")
     bot = AsyncMock()
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:edit"
 
     await on_draft_callback(cb, conn=ready_conn, bot=bot, settings=settings)
@@ -717,6 +728,7 @@ async def test_approve_callback_cleans_up_editor_prompt(ready_conn, settings):  
     db.set_edit_prompt(ready_conn, did, 222)
     bot = _sending_bot(901)  # «ножницы»
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:approve"
     cb.message.chat.id = 42
     cb.message.html_text = "Черновик ответа для X (chat 777):\n\nb"
@@ -736,6 +748,7 @@ async def test_reject_callback_cleans_up_editor_prompt(ready_conn, settings):  #
     db.set_edit_prompt(ready_conn, did, 222)
     bot = _sending_bot(901)
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:reject"
     cb.message.chat.id = 42
     cb.message.html_text = "Черновик ответа для X (chat 777):\n\nb"
@@ -758,6 +771,7 @@ async def test_stale_draft_callback_leaves_editor_prompt(ready_conn, settings, m
     ready_conn.commit()
     bot = _sending_bot(901)
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:reject"
     cb.message.chat.id = 42
     cb.message.html_text = "Черновик ответа для X (chat 777):\n\nb"
@@ -1035,6 +1049,7 @@ async def test_edit_callback_url_carries_escaped_plain_text(ready_conn, settings
     bot = AsyncMock()
     bot.send_message.return_value.message_id = 501
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:edit"
     cb.message.chat.id = 42
 
@@ -1218,6 +1233,7 @@ async def test_supersede_cleans_outbox_and_old_card_keeps_attachment_line(
 async def test_reject_callback_cleans_outbox(ready_conn, settings):  # noqa: F811
     did = _draft_with_upload(ready_conn, settings, "awaiting")
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:reject"
     cb.message.html_text = "карточка"
 
@@ -1313,6 +1329,7 @@ def test_card_markup_pause_row_without_editor(settings, monkeypatch):  # noqa: F
 async def test_pause_callback_rejects_pauses_and_cleans(ready_conn, settings):  # noqa: F811
     did = _draft_with_upload(ready_conn, settings, "awaiting")
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:pause"
     cb.message.html_text = "карточка"
 
@@ -1329,6 +1346,7 @@ async def test_pause_callback_rejects_pauses_and_cleans(ready_conn, settings):  
 async def test_pause_callback_on_processed_draft_does_not_pause(ready_conn, settings):  # noqa: F811
     did = db.create_draft(ready_conn, 777, "x", "sent")
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = f"draft:{did}:pause"
     await on_draft_callback(cb, conn=ready_conn, bot=AsyncMock(), settings=settings)
     assert not db.is_chat_paused(ready_conn, 777)
@@ -1371,6 +1389,7 @@ async def test_paused_command_ignores_stranger(ready_conn):
 async def test_unpause_callback_owner_unpauses(ready_conn):
     db.pause_chat(ready_conn, 777)
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = "unpause:777"
     cb.from_user.id = 42
     await on_unpause_callback(cb, conn=ready_conn)
@@ -1382,6 +1401,7 @@ async def test_unpause_callback_owner_unpauses(ready_conn):
 async def test_unpause_callback_ignores_stranger(ready_conn):
     db.pause_chat(ready_conn, 777)
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = "unpause:777"
     cb.from_user.id = 999
     await on_unpause_callback(cb, conn=ready_conn)
@@ -1393,7 +1413,36 @@ async def test_unpause_callback_ignores_stranger(ready_conn):
 async def test_unpause_callback_garbage_chat_id_ignored(ready_conn):
     db.pause_chat(ready_conn, 777)
     cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
     cb.data = "unpause:abc"
     cb.from_user.id = 42
     await on_unpause_callback(cb, conn=ready_conn)
     assert db.is_chat_paused(ready_conn, 777)
+
+
+@pytest.mark.asyncio
+async def test_card_buttons_ignore_strangers(ready_conn, settings):  # noqa: F811
+    # пересланная карточка не даёт постороннему ни отправить, ни поставить чат на паузу
+    did = db.create_draft(ready_conn, 777, "x", "awaiting")
+    for action in ("approve", "reject", "edit", "pause"):
+        cb = AsyncMock()
+        cb.from_user.id = 999
+        cb.data = f"draft:{did}:{action}"
+        await on_draft_callback(cb, conn=ready_conn, bot=AsyncMock(), settings=settings)
+    assert db.get_draft(ready_conn, did)["status"] == "awaiting"
+    assert not db.is_chat_paused(ready_conn, 777)
+
+
+@pytest.mark.asyncio
+async def test_pause_rejects_other_unsent_drafts_of_chat(ready_conn, settings):  # noqa: F811
+    queued = _draft_with_upload(ready_conn, settings, "approved", name="b.pdf")
+    did = db.create_draft(ready_conn, 777, "x", "awaiting")
+    other_chat = db.create_draft(ready_conn, 888, "y", "approved")
+    cb = AsyncMock()
+    cb.from_user.id = 42  # владелец из ready_conn
+    cb.data = f"draft:{did}:pause"
+    cb.message.html_text = "карточка"
+    await on_draft_callback(cb, conn=ready_conn, bot=AsyncMock(), settings=settings)
+    assert db.get_draft(ready_conn, queued)["status"] == "rejected"
+    assert not media.outbox_dir(settings.data_dir, queued).exists()
+    assert db.get_draft(ready_conn, other_chat)["status"] == "approved"

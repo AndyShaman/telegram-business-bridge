@@ -8,6 +8,10 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+
+class ChatPaused(Exception):
+    """Чат на паузе: черновик не создан."""
+
 _FTS_TOKEN = re.compile(r"\w+", re.UNICODE)
 
 
@@ -246,10 +250,15 @@ def create_draft(
     вызывается внутри той же транзакции, до commit — демон не увидит черновик, пока
     файлы вложений не записаны. Исключение из него откатывает и сам черновик."""
     try:
+        # проверка паузы и вставка — одна запись: пауза, поставленная после проверки
+        # в MCP, но до вставки, черновик всё равно не пропустит
         cur = conn.execute(
-            "INSERT INTO drafts (chat_id, text, status, created_ts, parse_mode) VALUES (?, ?, ?, ?, ?)",
-            (chat_id, text, status, int(time.time()), parse_mode),
+            """INSERT INTO drafts (chat_id, text, status, created_ts, parse_mode)
+               SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM paused_chats WHERE chat_id=?)""",
+            (chat_id, text, status, int(time.time()), parse_mode, chat_id),
         )
+        if cur.rowcount != 1:
+            raise ChatPaused(chat_id)
         did = cur.lastrowid
         if attachments is not None:
             for pos, item in enumerate(attachments(did)):
@@ -409,11 +418,26 @@ def list_edited_drafts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def pause_chat(conn: sqlite3.Connection, chat_id: int) -> None:
-    conn.execute(
-        "INSERT OR IGNORE INTO paused_chats (chat_id, ts) VALUES (?, ?)", (chat_id, int(time.time()))
-    )
-    conn.commit()
+def pause_chat(conn: sqlite3.Connection, chat_id: int) -> list[int]:
+    """Ставит чат на паузу и отклоняет его ещё не отправленные черновики (созданные до
+    паузы). Возвращает их id — вызывающий убирает их вложения."""
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO paused_chats (chat_id, ts) VALUES (?, ?)", (chat_id, int(time.time()))
+        )
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM drafts WHERE chat_id=? AND status IN ('pending', 'awaiting', 'approved')",
+            (chat_id,),
+        ).fetchall()]
+        conn.executemany(
+            "UPDATE drafts SET status='rejected' WHERE id=? AND status IN ('pending', 'awaiting', 'approved')",
+            [(i,) for i in ids],
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return ids
 
 
 def unpause_chat(conn: sqlite3.Connection, chat_id: int) -> bool:

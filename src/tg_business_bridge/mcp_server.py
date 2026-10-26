@@ -346,16 +346,28 @@ def _create_draft(chat_id: int, text: str, status: str, html: bool, attachments)
     if db.is_chat_paused(conn, chat_id):
         return _PAUSED
     materialize = None
+    written: list[int] = []
     if attachments:
         try:
             prepared = _prepare_attachments(conn, attachments)
         except AttachmentError as e:
             return f"Отказ: {e}. Черновик не создан."
-        materialize = _materializer(prepared)
+        write = _materializer(prepared)
+
+        def materialize(draft_id: int) -> list[dict]:
+            written.append(draft_id)
+            return write(draft_id)
     try:
         return db.create_draft(conn, chat_id, text, status, HTML if html else None, materialize)
-    except OSError as e:
-        return f"Отказ: не удалось сохранить вложение ({e}). Черновик не создан."
+    except BaseException as e:
+        # черновик откатился (в т.ч. на commit) — файлы без него никто больше не уберёт
+        for did in written:
+            media.remove_outbox(get_settings().data_dir, did)
+        if isinstance(e, db.ChatPaused):
+            return _PAUSED
+        if isinstance(e, OSError):
+            return f"Отказ: не удалось сохранить вложение ({e}). Черновик не создан."
+        raise
 
 
 def draft_reply_impl(chat_id: int, text: str, html: bool = False,
@@ -505,8 +517,9 @@ def read_media_impl(chat_id: int, message_id: int):
     if ext == ".pdf":
         try:
             text = _pdf_text(path)
-        except Exception as e:  # noqa: BLE001 - битый PDF от собеседника не должен ронять инструмент
-            return f"{label}: не удалось извлечь текст из PDF ({e})."
+        except Exception:  # noqa: BLE001 - битый PDF от собеседника не должен ронять инструмент
+            # текст исключения pypdf может нести строки из самого PDF — агенту его не отдаём
+            return f"{label}: не удалось извлечь текст из PDF (файл повреждён или не поддерживается)."
         if not text.strip():
             return f"{label}: в PDF нет извлекаемого текста (скан или картинки)."
         note = ""

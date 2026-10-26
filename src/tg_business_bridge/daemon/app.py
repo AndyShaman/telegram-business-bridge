@@ -19,6 +19,9 @@ async def run() -> None:
     recovered = db.recover_stale_sending(conn)
     if recovered > 0:
         log.warning("recovered %d stale sending draft(s)", recovered)
+    swept = media.sweep_outbox(conn, settings.data_dir)
+    if swept > 0:
+        log.warning("removed %d orphaned outbox dir(s)", swept)
     bot = Bot(token=settings.bot_token)
     me = await bot.get_me()
     log.info("bot @%s started", me.username)

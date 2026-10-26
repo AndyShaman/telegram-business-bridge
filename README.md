@@ -93,7 +93,7 @@ Telegram Business API
   ⚠️ Failed); when a new draft arrives for the same chat, the older card is marked
   "⏭ Superseded by a newer draft".
 - 🔕 Pause on the card: the agent gets no more drafts into that chat until you lift
-  the pause; `/paused` in the bot chat lists paused chats with ▶️ buttons to resume.
+  the pause, and its drafts not yet sent are dropped; `/paused` in the bot chat lists paused chats with ▶️ buttons to resume.
 - The agent's first version is kept when you edit a draft; `list_recent_edits`
   shows it next to what was sent, so the agent learns from your corrections.
 - Polls, checklists, contacts and venues land in the archive with searchable text.

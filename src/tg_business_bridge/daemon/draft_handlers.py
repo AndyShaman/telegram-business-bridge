@@ -269,6 +269,10 @@ async def on_draft_callback(
         await cb.answer()
         return
 
+    if not _is_owner(conn, cb.from_user):
+        await cb.answer()
+        return
+
     draft_id = int(draft_id_s)
     draft = db.get_draft(conn, draft_id)
     if draft is not None and draft["status"] == "superseded":
@@ -348,7 +352,8 @@ async def on_draft_callback(
             return
         media.remove_outbox(settings.data_dir, draft_id)
         if action == "pause":
-            db.pause_chat(conn, draft["chat_id"])
+            for did in db.pause_chat(conn, draft["chat_id"]):
+                media.remove_outbox(settings.data_dir, did)
             await cb.answer("Чат на паузе")
             mark = "🔕 Чат на паузе: черновики агента для него не принимаются. Снять — /paused"
         else:

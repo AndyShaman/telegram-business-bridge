@@ -177,3 +177,15 @@ def test_cleanup_expired_media_skips_path_escape(conn, tmp_path, monkeypatch, ca
     got = conn.execute("SELECT media_path FROM messages WHERE id=?", (rowid,)).fetchone()
     assert got["media_path"] == "../../etc/passwd"
     assert any("data_dir" in r.message for r in caplog.records)
+
+
+def test_sweep_outbox_removes_orphans_and_finished(tmp_path):
+    from tg_business_bridge import media
+    conn = db.connect(tmp_path / "b.db")
+    live = db.create_draft(conn, 1, "a", "awaiting")
+    done = db.create_draft(conn, 1, "b", "sent")
+    for name in (str(live), str(done), "999"):
+        (tmp_path / "outbox" / name).mkdir(parents=True)
+    assert media.sweep_outbox(conn, tmp_path) == 2
+    assert sorted(p.name for p in (tmp_path / "outbox").iterdir()) == [str(live)]
+    assert media.sweep_outbox(conn, tmp_path / "nothing-here") == 0
